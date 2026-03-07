@@ -1,0 +1,774 @@
+
+# GOS Framework — 开发文档
+### 星河创世纪 · Genesis of Stars
+
+> **给 AI 的核心说明：**
+> 本文档是唯一的接口权威来源。实现任何模块前必须完整阅读。
+> 所有函数签名、数据结构、事件名、命名规范均以本文档为准，禁止自行假设或扩展。
+
+---
+
+## 一、项目信息
+
+| 项目 | 说明 |
+|------|------|
+| 游戏名 | 星河创世纪（Genesis of Stars） |
+| 框架名 | GOS Framework |
+| 类型 | 回合制战棋 SRPG |
+| 引擎 | PixiJS v8 + Vite 5 |
+| 语言 | JavaScript ESM（ES2022，无 TypeScript） |
+| 入口 | `game/main.js` |
+| 项目根 | `E:\GOS\source\GOSFramework\game\` |
+
+---
+
+## 二、目录结构
+
+```
+game/
+├── main.js
+├── core/
+│   ├── Renderer.js
+│   ├── Battle.js
+│   ├── Map.js
+│   ├── Unit.js
+│   ├── Event.js
+│   ├── Dialog.js
+│   └── EffectManager.js
+├── units/
+│   ├── MechaBase.js
+│   └── Mecha1.js
+├── levels/
+│   └── level1.js
+└── assets/
+    ├── tilesets/
+    │   └── tileset_arranged.png
+    ├── units/
+    ├── effects/
+    │   ├── particles/
+    │   └── skills/
+    │       ├── laser_shot.js
+    │       ├── missile_fire.js
+    │       └── boss_death.js
+    ├── audio/
+    └── ui/
+```
+
+---
+
+## 三、坐标系约定（全局）
+
+```js
+// ✅ 格子坐标 —— 数组，整数
+const tile = [tx, ty]                    // 例：[3, 5]
+
+// ✅ 像素坐标 —— 对象
+const pixel = { px, py }                 // 例：{ px: 192, py: 320 }
+
+// ✅ 转换由 Map 实例提供，任何模块不得自行计算
+map.tileToPixel([tx, ty])   → { px, py }
+map.pixelToTile({ px, py }) → [tx, ty]
+
+// ❌ 禁止使用 {x, y}、{col, row}、[px, py] 等其他格式
+```
+
+---
+
+## 四、命名规范
+
+| 类别 | 规范 | 示例 |
+|------|------|------|
+| 类名 | PascalCase | `Battle`, `UnitManager` |
+| 实例/变量 | camelCase | `battle`, `unitManager` |
+| 常量/枚举 | UPPER_SNAKE | `Events.UNIT_DIED` |
+| 格子坐标变量 | tx, ty | `const [tx, ty] = unit.tile` |
+| 像素坐标变量 | px, py | `const { px, py } = map.tileToPixel(...)` |
+| 阵营字符串 | 小写字面量 | `'player'`, `'enemy'` |
+| 事件名 | 使用常量，禁止字符串字面量 | `Events.TURN_START` ✅ |
+| 文件名（类） | PascalCase | `Battle.js` |
+| 文件名（关卡） | camelCase | `level1.js` |
+
+---
+
+## 五、模块接口全览
+
+### 5.1 `main.js` — 入口
+
+```js
+/**
+ * 执行顺序：
+ *   1. 创建 PixiJS Application 并挂载到 document.body
+ *   2. 创建 Renderer，传入 app
+ *   3. 创建 EventBus
+ *   4. 导入并启动第一个关卡
+ */
+import { Application } from 'pixi.js'
+import { Renderer }    from './core/Renderer.js'
+import { EventBus }    from './core/Event.js'
+import level1          from './levels/level1.js'
+
+const app      = new Application()
+const renderer = new Renderer(app)
+const events   = new EventBus()
+level1.start(renderer, events)
+```
+
+---
+
+### 5.2 `core/Renderer.js` — 渲染器
+
+```js
+export class Renderer {
+  /** @param {Application} app */
+  constructor(app) {}
+
+  /**
+   * 图层引用（按渲染顺序从下到上，只读）
+   * @type {{
+   *   background: Container,
+   *   terrain:    Container,
+   *   decoration: Container,
+   *   highlight:  Container,
+   *   units:      Container,
+   *   effects:    Container,
+   *   ui:         Container,
+   *   dialog:     Container,
+   * }}
+   */
+  get layers() {}
+
+  /** @returns {{ width: number, height: number }} */
+  get size() {}
+}
+```
+
+---
+
+### 5.3 `core/Event.js` — 事件系统
+
+```js
+export class EventBus {
+  on(event, handler) {}
+  once(event, handler) {}
+  off(event, handler) {}
+  emit(event, payload) {}
+}
+
+export const Events = {
+  TURN_START:    'turnStart',    // { team, turn }
+  TURN_END:      'turnEnd',      // { team }
+  UNIT_MOVED:    'unitMoved',    // { unit, from: [tx,ty], to: [tx,ty] }
+  UNIT_ATTACKED: 'unitAttacked', // { attacker, target, damage }
+  UNIT_HP_BELOW: 'unitHpBelow', // { unit, threshold }
+  UNIT_DIED:     'unitDied',     // { unit }
+  TEAM_WIPED:    'teamWiped',    // { team }
+  TILE_ENTERED:  'tileEntered',  // { unit, tile }
+  DIALOG_DONE:   'dialogDone',   // { key }
+  LEVEL_WIN:     'levelWin',     // {}
+  LEVEL_LOSE:    'levelLose',    // {}
+}
+```
+
+---
+
+### 5.4 `core/Map.js` — 瓦片地图
+
+```js
+export class Map {
+  /** @param {Renderer} renderer  @param {MapData} mapData */
+  constructor(renderer, mapData) {}
+
+  /** 切割图集，渲染三层瓦片 @returns {Promise<void>} */
+  async render() {}
+
+  /** @param {[number,number]} tile @returns {{ px, py }} */
+  tileToPixel([tx, ty]) {}
+
+  /** @param {{ px, py }} pixel @returns {[number,number]} */
+  pixelToTile({ px, py }) {}
+
+  /** @param {[number,number]} tile @returns {boolean} */
+  isPassable([tx, ty]) {}
+
+  /** @param {[number,number]} tile @returns {TileProps} */
+  getTileProps([tx, ty]) {}
+
+  /**
+   * 高亮格子（可多次调用叠加，不自动清除）
+   * @param {[number,number][]} tiles
+   * @param {number} color  0xRRGGBB
+   * @param {number} alpha  默认 0.4
+   */
+  highlight(tiles, color, alpha = 0.4) {}
+
+  clearHighlight() {}
+
+  /** 四邻格，过滤越界 @returns {[number,number][]} */
+  getNeighbors([tx, ty]) {}
+
+  /**
+   * A* 寻路，不穿越单位和不可通行格
+   * @returns {[number,number][]}  含起点和终点，无路返回 []
+   */
+  findPath(from, to, maxSteps = Infinity) {}
+
+  /**
+   * BFS 获取可达格集合
+   * @returns {[number,number][]}
+   */
+  getReachable(origin, steps) {}
+
+  get cols() {}
+  get rows() {}
+}
+
+/**
+ * @typedef {object} MapData
+ * @property {number}   cols
+ * @property {number}   rows
+ * @property {number}   tileSize          当前 16px，后期替换为 64px
+ * @property {string}   tilesetPath
+ * @property {number}   tilesetCols       图集每行瓦片数
+ * @property {{ background: number[][], terrain: number[][], decoration: number[][] }} layers
+ * @property {Object.<number, TileProps>} tileProps
+ * @property {DeployEntry[]} deploy
+ * @property {Object.<string, DialogLine[]>} dialogs
+ * @property {string}   bgm
+ */
+
+/**
+ * @typedef {object} TileProps
+ * @property {boolean} passable
+ * @property {string}  type  'ground'|'mountain'|'water'|'crater'|'deco'
+ */
+```
+
+---
+
+### 5.5 `core/Unit.js` — 单位系统
+
+```js
+export class Unit {
+  // 只读属性
+  get id() {}       // '{unitId}_{team}_{序号}'，如 'Mecha1_player_0'
+  get team() {}     // 'player' | 'enemy'
+  get tile() {}     // [tx, ty]
+  get stats() {}    // UnitStats（含实时 hp）
+  get hasMoved() {}
+  get hasAttacked() {}
+  get isAlive() {}
+
+  /**
+   * 沿路径逐格移动动画
+   * @param {[number,number]}   tile
+   * @param {[number,number][]} path
+   * @returns {Promise<void>}
+   */
+  async moveTo(tile, path) {}
+
+  /** hp 归零时自动调用 die() */
+  takeDamage(amount) {}
+
+  /** 不超过 maxHp */
+  heal(amount) {}
+
+  /** 播放死亡动画后从 layers.units 移除 @returns {Promise<void>} */
+  async die() {}
+
+  /** 由 Battle 在回合结束时调用，外部禁止调用 */
+  resetTurn() {}
+}
+
+// ─────────────────────────────────────
+
+export class UnitManager {
+  /**
+   * @param {Renderer} renderer
+   * @param {Map}      map
+   * @param {EventBus} events
+   */
+  constructor(renderer, map, events) {}
+
+  /** @param {DeployEntry[]} deployList @returns {Promise<void>} */
+  async deploy(deployList) {}
+
+  /**
+   * @param {object}           unitData  MechaXxx.js 导出对象
+   * @param {'player'|'enemy'} team
+   * @param {[number,number]}  tile
+   * @returns {Unit}
+   */
+  add(unitData, team, tile) {}
+
+  /** 仅数据层移除，不触发死亡动画 */
+  remove(unit) {}
+
+  /** @returns {Unit|null} */
+  get(id) {}
+
+  /** 仅返回存活单位 @returns {Unit[]} */
+  getByTeam(team) {}
+
+  /** @returns {Unit|null} */
+  getAt(tile) {}
+
+  /** @returns {Unit[]} */
+  all() {}
+}
+
+// ─────────────────────────────────────
+
+export class AIBase {
+  /**
+   * @param {UnitManager} units
+   * @param {Map}         map
+   * @param {Battle}      battle
+   */
+  constructor(units, map, battle) {}
+
+  /**
+   * 串行执行所有敌方单位本回合行动
+   * @returns {Promise<void>}
+   */
+  async executeTurn() {}
+}
+
+/**
+ * @typedef {object} UnitStats
+ * @property {number} hp
+ * @property {number} maxHp
+ * @property {number} atk
+ * @property {number} def
+ * @property {number} move   每回合可移动格数
+ * @property {number} range  攻击射程（格）
+ */
+
+/**
+ * @typedef {object} DeployEntry
+ * @property {string}           unitId
+ * @property {'player'|'enemy'} team
+ * @property {[number,number]}  tile
+ */
+```
+
+---
+
+### 5.6 `core/Battle.js` — 战斗控制器
+
+```js
+export class Battle {
+  /**
+   * @param {Renderer}      renderer
+   * @param {Map}           map
+   * @param {UnitManager}   units
+   * @param {EffectManager} effects
+   * @param {EventBus}      events
+   */
+  constructor(renderer, map, units, effects, events) {}
+
+  // ── 流程控制 ──────────────────────────
+
+  /** 部署单位，发出第一个 TURN_START @returns {Promise<void>} */
+  async start(levelData) {}
+
+  /**
+   * 结束当前回合，切换阵营
+   * 流程：resetTurn → TURN_END → TURN_START → 若enemy则executeTurn
+   * @returns {Promise<void>}
+   */
+  async nextTurn() {}
+
+  get currentTeam() {} // 'player' | 'enemy'
+  get turn() {}        // number，从 1 开始
+
+  // ── 玩家行动接口（由 UI 调用）────────────
+
+  /**
+   * 移动单位（含合法性校验）
+   * 成功：unit.hasMoved=true，发出 UNIT_MOVED
+   * @returns {Promise<boolean>}
+   */
+  async moveUnit(unit, targetTile) {}
+
+  /**
+   * 发起攻击（含合法性校验、伤害计算、特效）
+   * 成功：unit.hasAttacked=true，发出 UNIT_ATTACKED
+   * 目标死亡：发出 UNIT_DIED，全灭时发出 TEAM_WIPED
+   * @returns {Promise<boolean>}
+   */
+  async attackUnit(attacker, target) {}
+
+  /** 标记单位本回合行动结束（hasMoved 和 hasAttacked 均置 true） */
+  endUnitTurn(unit) {}
+
+  // ── 工具函数 ──────────────────────────
+
+  /**
+   * 预计算伤害（不扣血，供 UI 预览和 AI 决策使用）
+   * 公式：max(1, atk - def)
+   * @returns {number}
+   */
+  calcDamage(attacker, target) {}
+}
+```
+
+---
+
+### 5.7 `core/Dialog.js` — 叙事系统
+
+```js
+export class DialogManager {
+  /**
+   * @param {Renderer} renderer
+   * @param {EventBus} events
+   */
+  constructor(renderer, events) {}
+
+  /**
+   * 顺序播放对话，每条等待点击/按键推进
+   * 全部结束后发出 Events.DIALOG_DONE { key }
+   * @param {DialogLine[]} lines
+   * @param {string}       key
+   * @returns {Promise<void>}
+   */
+  async show(lines, key) {}
+
+  /** 立即关闭，不发事件 */
+  hide() {}
+}
+
+// ─────────────────────────────────────
+
+export class SceneManager {
+  /** @param {Renderer} renderer */
+  constructor(renderer) {}
+
+  /** 跳转关卡，传入关卡模块的 default export */
+  async goto(levelModule) {}
+
+  /** 显示标题画面，玩家确认后 resolve @returns {Promise<void>} */
+  async showTitle() {}
+
+  /** @param {'win'|'lose'} result @returns {Promise<void>} */
+  async showResult(result) {}
+}
+
+/**
+ * @typedef {object} DialogLine
+ * @property {string} speaker
+ * @property {string} text
+ * @property {string} [face]  头像路径（可选）
+ */
+```
+
+---
+
+### 5.8 `core/EffectManager.js` — 特效系统
+
+```js
+export class EffectManager {
+  /** @param {Renderer} renderer */
+  constructor(renderer) {}
+
+  /** 激光束（直线） @returns {Promise<void>} */
+  async laser(from, to, options = {}) {}
+  // options: { color?: number, width?: number, duration?: number }
+
+  /** 抛射物（弧线飞行） @returns {Promise<void>} */
+  async projectile(from, to, options = {}) {}
+  // options: { type?: 'missile'|'bullet', speed?: number }
+
+  /** 爆炸（帧动画+粒子） @returns {Promise<void>} */
+  async explosion(at, options = {}) {}
+  // options: { size?: 'small'|'medium'|'large' }
+
+  /** 护盾光圈 @returns {Promise<void>} */
+  async shield(unit, options = {}) {}
+  // options: { color?: number, duration?: number }
+
+  /** 推进器尾焰 @returns {Promise<void>} */
+  async propulsion(unit, options = {}) {}
+  // options: { duration?: number }
+
+  /** 全屏特效 @returns {Promise<void>} */
+  async screen(type, options = {}) {}
+  // type: 'flash'|'shake'|'darken'
+  // options: { intensity?: number, duration?: number }
+
+  /** 通用粒子 @returns {Promise<void>} */
+  async particle(at, options = {}) {}
+  // options: { count?, color?, spread?, duration? }
+
+  /**
+   * 播放完整技能时序脚本
+   * @param {SequenceStep[]} sequence
+   * @param {{ attacker: Unit, target: Unit }} context
+   * @returns {Promise<void>}
+   */
+  async playSequence(sequence, context) {}
+}
+
+/**
+ * @typedef {object} SequenceStep
+ * @property {number} t       触发时间（ms，相对技能开始）
+ * @property {'sfx'|'anim'|'projectile'|'explosion'|'laser'|'screen'|'damage'|'end'} action
+ * @property {string} [id]
+ * @property {'attacker'|'target'} [target]
+ * @property {string} [clip]
+ * @property {string} [type]
+ */
+```
+
+---
+
+### 5.9 `units/MechaBase.js` — 单位数据模板
+
+```js
+/**
+ * 字段规范文档，新增单位参照此格式创建 MechaXxx.js。
+ *
+ * @typedef {object} UnitData
+ * @property {string}    id            全局唯一，如 'Mecha1'
+ * @property {string}    name          显示名称
+ * @property {string}    spritesheet   路径 'assets/units/xxx.png'
+ * @property {UnitStats} stats
+ * @property {SkillDef[]} skills       至少包含一个普通攻击
+ * @property {'aggressive'|'defensive'|'boss'} ai
+ */
+
+/**
+ * @typedef {object} SkillDef
+ * @property {string} id
+ * @property {string} name
+ * @property {number} range
+ * @property {number} damage
+ * @property {string} script  'assets/effects/skills/xxx.js'
+ */
+```
+
+---
+
+### 5.10 `units/Mecha1.js` — 单位数据实例示例
+
+```js
+/** @type {UnitData} */
+export default {
+  id:          'Mecha1',
+  name:        'GOS-01 先驱',
+  spritesheet: 'assets/units/mecha1.png',
+  stats: {
+    hp:    100,
+    maxHp: 100,
+    atk:   30,
+    def:   10,
+    move:  4,
+    range: 2,
+  },
+  skills: [
+    {
+      id:     'laser_shot',
+      name:   '激光炮',
+      range:  3,
+      damage: 50,
+      script: 'assets/effects/skills/laser_shot.js',
+    },
+  ],
+  ai: 'aggressive',
+}
+```
+
+---
+
+### 5.11 `levels/level1.js` — 关卡文件结构
+
+```js
+/**
+ * 关卡文件：数据 + 逻辑一体，default export 一个对象。
+ *
+ * 必须导出：
+ *   export default { start(renderer, events) }
+ *
+ * start() 内部执行顺序：
+ *   1. 实例化所有核心模块
+ *   2. await map.render()
+ *   3. 注册胜负条件监听
+ *   4. await dialog.show(opening)
+ *   5. await battle.start(mapData)
+ */
+
+import { Map }           from '../core/Map.js'
+import { Battle }        from '../core/Battle.js'
+import { UnitManager }   from '../core/Unit.js'
+import { EffectManager } from '../core/EffectManager.js'
+import { DialogManager } from '../core/Dialog.js'
+import { Events }        from '../core/Event.js'
+import Mecha1            from '../units/Mecha1.js'
+
+// ── 地图数据 ────────────────────────────────────────────
+
+const mapData = {
+  cols: 16,
+  rows: 10,
+  tileSize: 16,
+  tilesetPath: 'assets/tilesets/tileset_arranged.png',
+  tilesetCols: 16,
+
+  layers: {
+    background: [
+      // 10 行 × 16 列，值为瓦片 ID（id = row*16 + col）
+    ],
+    terrain: [
+      // 0 = 无地形
+    ],
+    decoration: [
+      // 0 = 无点缀
+    ],
+  },
+
+  tileProps: {
+    0:  { passable: true,  type: 'ground' },
+    // ...根据实际图集补充
+  },
+
+  deploy: [
+    { unitId: 'Mecha1', team: 'player', tile: [2, 5] },
+    { unitId: 'Mecha1', team: 'enemy',  tile: [13, 5] },
+  ],
+
+  dialogs: {
+    opening: [
+      { speaker: '指挥官', text: '目标已确认，开始战斗。' },
+    ],
+    victory: [
+      { speaker: '指挥官', text: '干得好，撤退。' },
+    ],
+    defeat: [
+      { speaker: '指挥官', text: '任务失败，全员撤离。' },
+    ],
+  },
+
+  bgm: 'assets/audio/level1.mp3',
+}
+
+// ── 关卡逻辑 ────────────────────────────────────────────
+
+export default {
+  /**
+   * @param {Renderer} renderer
+   * @param {EventBus} events
+   */
+  async start(renderer, events) {
+    const map     = new Map(renderer, mapData)
+    const units   = new UnitManager(renderer, map, events)
+    const effects = new EffectManager(renderer)
+    const dialog  = new DialogManager(renderer, events)
+    const battle  = new Battle(renderer, map, units, effects, events)
+
+    // 渲染地图
+    await map.render()
+
+    // 胜负条件
+    events.on(Events.TEAM_WIPED, ({ team }) => {
+      if (team === 'enemy')  events.emit(Events.LEVEL_WIN,  {})
+      if (team === 'player') events.emit(Events.LEVEL_LOSE, {})
+    })
+
+    // 开场对话
+    await dialog.show(mapData.dialogs.opening, 'opening')
+
+    // 启动战斗
+    await battle.start(mapData)
+  },
+}
+```
+
+---
+
+## 六、资源规范
+
+### 6.1 瓦片图集
+
+| 文件 | 规格 | 说明 |
+|------|------|------|
+| `tileset_arranged.png` | 256×256px，每格 16px，16×16 布局 | 当前使用 |
+| `tileset_compressed.png` | 同上，排列不同 | 备用 |
+
+```
+瓦片 ID 计算：id = row * tilesetCols + col
+例：第3行第2列 → id = 3 * 16 + 2 = 50
+```
+
+> ⚠️ tileSize 和 tilesetCols 后期换高清图时只需修改 mapData，代码无需改动。
+
+### 6.2 单位精灵图
+
+```
+assets/units/
+  mecha1.png     单帧或帧动画图集（待定规格）
+```
+
+### 6.3 技能时序脚本示例
+
+```js
+// assets/effects/skills/laser_shot.js
+export const sequence = [
+  { t: 0,   action: 'sfx',        id: 'laser_charge' },
+  { t: 0,   action: 'anim',       target: 'attacker', clip: 'shoot' },
+  { t: 200, action: 'laser',      target: 'target' },
+  { t: 400, action: 'explosion',  target: 'target',   type: 'small' },
+  { t: 400, action: 'damage',     target: 'target' },
+  { t: 600, action: 'end' },
+]
+```
+
+---
+
+## 七、开发阶段规划
+
+```
+阶段 1 ── 地图渲染                    ← 当前目标
+  Event.js        EventBus + Events 常量
+  Renderer.js     图层初始化
+  Map.js          图集切割 + 三层渲染 + 坐标转换
+  main.js         加载 level1，显示地图
+
+阶段 2 ── 单位上场
+  Unit.js         Unit + UnitManager（不含AI）
+  Mecha1.js       第一个单位数据
+  Battle.js       start()，部署单位到地图
+
+阶段 3 ── 战斗逻辑
+  Battle.js       moveUnit / attackUnit / nextTurn
+  AIBase          aggressive 策略
+  Map.js          findPath / getReachable
+  level1.js       胜负条件
+
+阶段 4 ── 演出特效
+  EffectManager   各子系统实现
+  skills/*.js     技能时序脚本
+
+阶段 5 ── 叙事系统
+  Dialog.js       对话框 UI
+  SceneManager    标题 / 结算画面
+```
+
+---
+
+## 八、给 AI 的编码指令模板
+
+每次请求实现某个模块时，使用以下格式：
+
+```
+请实现 [模块名]，要求：
+1. 严格遵守 GOS Framework AI 开发文档第五章对应的接口签名
+2. 使用 ESM 格式（import / export）
+3. PixiJS v8 API
+4. 坐标格式严格遵守第三章约定（格子用数组，像素用对象）
+5. 事件名全部使用 Events 常量，禁止字符串字面量
+6. 所有异步操作返回 Promise
+7. 不引入文档未提及的第三方库
+```
+
+---
+
+*文档版本：v2.0 | 框架：GOS Framework | 游戏：星河创世纪 Genesis of Stars*
